@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────
+# privacy first: never commit personal financial data or secrets
+# ─────────────────────────────────────────────────────────────
+
+# the database holds all of your real holdings — keep it local
+*.db
+*.sqlite
+*.sqlite3
+
+# raw broker exports & any data drops (Fidelity CSVs, etc.)
+# keep the folder + its README in the repo, ignore everything dropped into it
+data/*
+!data/.gitkeep
+!data/README.md
+*.csv
+*.xlsx
+*.xls
+
+# secrets / API credentials (SnapTrade, Google, etc.)
+.env
+.env.*
+!.env.example
+secrets/
+credentials.json
+token.json
+service_account*.json
+*.pem
+
+# ─────────────────────────────────────────────────────────────
+# python
+# ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.python-version
+*.egg-info/
+.pytest_cache/
+
+# ─────────────────────────────────────────────────────────────
+# notebooks — strip checkpoints (outputs can contain real numbers)
+# ─────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ─────────────────────────────────────────────────────────────
+# editor / OS / tooling
+# ─────────────────────────────────────────────────────────────
+.DS_Store
+.vscode/
+.idea/
+.claude/

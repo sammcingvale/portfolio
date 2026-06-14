@@ -1,0 +1,11 @@
+# core
+pandas>=2.0
+yfinance>=0.2.40
+
+# automated daily holdings via SnapTrade (only needed for the automated path)
+snaptrade-python-sdk>=11.0
+python-dotenv>=1.0
+
+# optional: publishing report views to Google Sheets (uncomment when you get there)
+# gspread>=6.0
+# google-auth>=2.0
