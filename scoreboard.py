@@ -27,6 +27,7 @@ import re
 import pandas as pd
 
 from portfolio_db import get_connection
+from returns import money_weighted_return
 
 # cash / money-market symbols
 CASH_SYMBOLS = {"CASH", "SPAXX", "FDRXX", "FZFXX", "FCASH", "FNSXX", "FGXX"}
@@ -158,6 +159,7 @@ def scoreboard() -> dict:
         "ttm": ttm,
         "net_additions_ytd": _net_additions(f"{end_date.year}-01-01", end_iso),
         "net_additions_ttm": _net_additions(ttm["start_date"], end_iso),
+        "money_weighted": money_weighted_return(),  # rigorous once >=2 snapshots exist
     }
 
 
@@ -198,6 +200,16 @@ def main() -> None:
         print(f"  net additions / withdrawals")
         print(f"    YTD                     {_flow(na_ytd)}")
         print(f"    TTM                     {_flow(na_ttm)}")
+    print(f"  {line}")
+    mwr = s["money_weighted"]
+    if "error" in mwr:
+        print(f"  money-weighted return            PENDING (needs a 2nd holdings snapshot)")
+    else:
+        sign = "+" if (mwr["money_weighted_return_annualized"] or 0) >= 0 else ""
+        print(f"  money-weighted return   {mwr['start_date']} → {mwr['end_date']}")
+        print(f"    annualized (XIRR)       {sign}{mwr['money_weighted_return_annualized']}%")
+        print(f"    investment gain         {sign if mwr['investment_gain']>=0 else ''}"
+              f"{_fmt(mwr['investment_gain'])}   (markets, net of your deposits/withdrawals)")
     print(f"  {line}")
     print(f"  for context — excluded from equity exposure:")
     print(f"    bonds                   {_fmt(s['bonds']):>18}")
