@@ -99,6 +99,34 @@ def _basket_return(holdings: pd.DataFrame, wide: pd.DataFrame, start: pd.Timesta
     }
 
 
+def _net_additions(start: str, end: str) -> dict | None:
+    """net external flows (deposits - withdrawals, transfers) over [start, end].
+
+    returns None if no transaction history has been loaded yet."""
+    conn = get_connection()
+    try:
+        has_tbl = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='transactions'"
+        ).fetchone()
+        if not has_tbl or not conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]:
+            return None
+        net = conn.execute(
+            """SELECT COALESCE(SUM(amount), 0) FROM transactions
+               WHERE is_external_flow = 1 AND run_date >= ? AND run_date <= ?""",
+            (start, end),
+        ).fetchone()[0]
+        # transferred securities often post with no cash Amount — flag if any exist
+        untracked = conn.execute(
+            """SELECT COUNT(*) FROM transactions
+               WHERE is_external_flow = 1 AND COALESCE(amount, 0) = 0
+                 AND run_date >= ? AND run_date <= ?""",
+            (start, end),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    return {"net": round(net), "untracked_transfers": untracked}
+
+
 def scoreboard() -> dict:
     holdings = _latest_holdings()
     equity = holdings[holdings.bucket == "equity"].copy()
@@ -108,17 +136,19 @@ def scoreboard() -> dict:
 
     wide = _asof_prices(equity.ticker.tolist())
     end_date = wide.index.max()
+    end_iso = end_date.date().isoformat()
     ytd = _basket_return(equity, wide, pd.Timestamp(end_date.year, 1, 1))
     ttm = _basket_return(equity, wide, end_date - pd.Timedelta(days=365))
 
     return {
-        "as_of": end_date.date().isoformat(),
+        "as_of": end_iso,
         "equity_exposure": round(equity_total),
         "bonds": round(by_bucket.get("bond", 0.0)),
         "cash": round(by_bucket.get("cash", 0.0)),
         "ytd": ytd,
         "ttm": ttm,
-        "net_additions": None,   # PENDING: needs transaction history / 2nd snapshot
+        "net_additions_ytd": _net_additions(f"{end_date.year}-01-01", end_iso),
+        "net_additions_ttm": _net_additions(ttm["start_date"], end_iso),
     }
 
 
@@ -143,7 +173,18 @@ def main() -> None:
     print(f"    YTD ({s['ytd']['start_date']} →)     {_pct(s['ytd'])}")
     print(f"    TTM ({s['ttm']['start_date']} →)     {_pct(s['ttm'])}")
     print(f"  {line}")
-    print(f"  net additions / withdrawals      PENDING (needs transactions)")
+    na_ytd, na_ttm = s["net_additions_ytd"], s["net_additions_ttm"]
+    if na_ytd is None:
+        print(f"  net additions / withdrawals      PENDING (needs transactions)")
+    else:
+        def _flow(na):
+            sign = "+" if na["net"] >= 0 else ""
+            note = f"  (+{na['untracked_transfers']} securities transfers, $ not valued)" \
+                if na["untracked_transfers"] else ""
+            return f"{sign}{_fmt(na['net'])}{note}"
+        print(f"  net additions / withdrawals")
+        print(f"    YTD                     {_flow(na_ytd):>18}")
+        print(f"    TTM                     {_flow(na_ttm):>18}")
     print(f"  {line}")
     print(f"  for context — excluded from equity exposure:")
     print(f"    bonds                   {_fmt(s['bonds']):>18}")

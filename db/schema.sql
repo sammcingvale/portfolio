@@ -53,6 +53,30 @@ CREATE TABLE IF NOT EXISTS prices (
 
 CREATE INDEX IF NOT EXISTS idx_prices_ticker ON prices (ticker);
 
+-- account activity (deposits, withdrawals, buys, sells, dividends, transfers).
+-- this is what separates "money/shares moved in or out" (external flows) from
+-- "the market moved" — the basis for net additions and true performance.
+CREATE TABLE IF NOT EXISTS transactions (
+    run_date        TEXT NOT NULL,           -- ISO date the transaction posted
+    account_id      TEXT NOT NULL,
+    action          TEXT,                     -- raw Fidelity action text
+    category        TEXT,                     -- our classification (see ingest)
+    is_external_flow INTEGER DEFAULT 0,       -- 1 if money/shares entered/left the portfolio
+    symbol          TEXT,
+    description     TEXT,
+    quantity        REAL,
+    price           REAL,
+    amount          REAL,                     -- signed cash impact (+ in / - out)
+    settlement_date TEXT,
+    source          TEXT DEFAULT 'fidelity_csv',
+    -- Fidelity gives no transaction id; dedupe on the natural key so re-imports
+    -- of overlapping date ranges don't double-count
+    UNIQUE (run_date, account_id, action, symbol, quantity, amount, settlement_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions (run_date);
+CREATE INDEX IF NOT EXISTS idx_tx_flow ON transactions (is_external_flow);
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- convenience views
 -- ───────────────────────────────────────────────────────────────────────────
