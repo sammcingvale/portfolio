@@ -112,8 +112,12 @@ def _guess_account_type(name: str) -> str:
 
 
 def import_csv(csv_path: Path, snapshot_date: str) -> int:
-    # Fidelity appends disclaimer text after a blank line; read only well-formed rows
-    df = pd.read_csv(csv_path, dtype=str, skip_blank_lines=True, on_bad_lines="skip")
+    # Fidelity appends a trailing comma to every data row (one more field than the
+    # header) AND appends disclaimer text after a blank line. index_col=False stops
+    # pandas from treating that extra leading field as a row index (which would shift
+    # every column left by one); on_bad_lines='skip' drops the trailing disclaimer.
+    df = pd.read_csv(csv_path, dtype=str, skip_blank_lines=True,
+                     on_bad_lines="skip", index_col=False)
     df = df.dropna(how="all")
     cols = _resolve_columns(df)
 
