@@ -1,10 +1,6 @@
 # portfolio
 
-a small, local toolkit for understanding an equity portfolio held at Fidelity
-across many accounts (including SMAs). it keeps a dated history of **what you own**
-and **how those holdings have performed**, so you can ask questions like
-_"how much NVDA do I own and how has it done over the last 6 months?"_ and build
-your own reports.
+a small, local toolkit for understanding an equity portfolio. it keeps a dated history of **what you own** and **how those holdings have performed**, so you can ask questions like _"how much NVDA do I own and how has it done over the last 6 months?"_ and build your own reports.
 
 ## how it works
 
@@ -15,15 +11,9 @@ it's really two separate data streams that meet in one small database:
 | **holdings** | what you own, per account (shares, cost basis, value) | Fidelity — via a CSV export today, or automated daily via SnapTrade |
 | **prices** | daily closing prices per ticker, for performance | [yfinance](https://pypi.org/project/yfinance/) (free) |
 
-everything lands in a local **SQLite** file (`portfolio.db`). holdings are stored as
-dated **snapshots** (one row per position per day), so history is preserved and
-"what did I own 6 months ago" is answerable. on top of that you can ask questions
-three ways: in plain language (have Claude query the db), in a **Jupyter notebook**,
-or by publishing views out to **Google Sheets**.
+everything lands in a local **SQLite** file (`portfolio.db`). holdings are stored as dated **snapshots** (one row per position per day), so history is preserved and "what did I own 6 months ago" is answerable. on top of that you can ask questions three ways: in plain language (have Claude query the db), in a **Jupyter notebook**, or by publishing views out to **Google Sheets**.
 
-> **privacy:** your real financial data **never** gets committed. the database, all
-> CSV exports, and your `.env` secrets are gitignored. only code is tracked. see
-> [`.gitignore`](.gitignore).
+> **privacy:** your real financial data **never** gets committed. the database, all CSV exports, and your `.env` secrets are gitignored. only code is tracked. see [`.gitignore`](.gitignore).
 
 ## project layout
 
@@ -76,9 +66,7 @@ so your history accumulates.
 
 ## automated daily (Fidelity via SnapTrade)
 
-once the CSV flow proves out, you can have holdings refresh automatically each day
-instead of exporting by hand. [SnapTrade](https://snaptrade.com/) connects Fidelity
-read-only (positions & balances; it cannot trade).
+once the CSV flow proves out, you can have holdings refresh automatically each day instead of exporting by hand. [SnapTrade](https://snaptrade.com/) connects Fidelity read-only (positions & balances; it cannot trade).
 
 1. create a SnapTrade developer account → get a **clientId** and **consumerKey**.
 2. `cp .env.example .env` and fill those two values in.
@@ -86,8 +74,7 @@ read-only (positions & balances; it cannot trade).
    ```bash
    python ingest/snaptrade_holdings.py --connect
    ```
-   this prints a `SNAPTRADE_USER_SECRET` (save it into `.env`) and a URL — open it
-   to authorize Fidelity.
+   this prints a `SNAPTRADE_USER_SECRET` (save it into `.env`) and a URL — open it to authorize Fidelity.
 4. from then on, a daily snapshot is one command:
    ```bash
    python ingest/snaptrade_holdings.py && python ingest/yf_prices.py
