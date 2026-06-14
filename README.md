@@ -94,4 +94,6 @@ performance("NVDA", months=6)
 - [x] SQLite core + Fidelity CSV import + yfinance prices + query layer
 - [ ] SnapTrade automated daily sync
 - [ ] notebook with standard charts (allocation, performance, gains)
+- [ ] look-through exposure: ETF constituent weights → true per-stock exposure
+      (direct holdings + the stocks held inside your ETFs/funds)
 - [ ] publish daily report views to Google Sheets
