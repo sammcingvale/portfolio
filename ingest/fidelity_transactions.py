@@ -67,7 +67,10 @@ ACTION_RULES: list[tuple[str, str, int]] = [
     (r"NAME CHANGE", "name_change", 0),
     (r"SMA ADJUSTMENT|ADJUST|ADJUSTMENT", "adjustment", 0),
     (r"EXPIRED|ASSIGNED|EXERCISE", "option_action", 0),
-    (r"REDEMPTION FROM CORE|CORE ACCOUNT", "core_cash", 0),  # money-market sweep
+    (r"REVERSE SPLIT|FORWARD SPLIT|STOCK SPLIT|R/S", "split", 0),
+    (r"REDEMPTION FROM CORE|CORE ACCOUNT|EXCHANGED TO|EXCHANGED FROM",
+     "core_cash", 0),                                       # money-market / sweep moves
+    (r"REDEMPTION PAYOUT|REDEMPTION|MATURED|MATURITY", "redemption", 0),  # bond matured to cash
 
     # ── INTERNAL: trades & costs ──
     (r"YOU BOUGHT|BOUGHT", "buy", 0),
