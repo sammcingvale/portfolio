@@ -110,21 +110,30 @@ def _net_additions(start: str, end: str) -> dict | None:
         ).fetchone()
         if not has_tbl or not conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]:
             return None
+        # the window is only as trustworthy as the loaded history — if transactions
+        # begin after `start`, the figure is partial and we say so
+        first_tx = conn.execute("SELECT MIN(run_date) FROM transactions").fetchone()[0]
+        effective_start = max(start, first_tx)
         net = conn.execute(
             """SELECT COALESCE(SUM(amount), 0) FROM transactions
                WHERE is_external_flow = 1 AND run_date >= ? AND run_date <= ?""",
-            (start, end),
+            (effective_start, end),
         ).fetchone()[0]
-        # transferred securities often post with no cash Amount — flag if any exist
+        # transferred securities sometimes post with no cash Amount — flag if any exist
         untracked = conn.execute(
             """SELECT COUNT(*) FROM transactions
                WHERE is_external_flow = 1 AND COALESCE(amount, 0) = 0
                  AND run_date >= ? AND run_date <= ?""",
-            (start, end),
+            (effective_start, end),
         ).fetchone()[0]
     finally:
         conn.close()
-    return {"net": round(net), "untracked_transfers": untracked}
+    return {
+        "net": round(net),
+        "untracked_transfers": untracked,
+        "from": effective_start,
+        "partial": first_tx > start,
+    }
 
 
 def scoreboard() -> dict:
@@ -179,12 +188,16 @@ def main() -> None:
     else:
         def _flow(na):
             sign = "+" if na["net"] >= 0 else ""
-            note = f"  (+{na['untracked_transfers']} securities transfers, $ not valued)" \
-                if na["untracked_transfers"] else ""
+            notes = []
+            if na["partial"]:
+                notes.append(f"partial — history starts {na['from']}")
+            if na["untracked_transfers"]:
+                notes.append(f"{na['untracked_transfers']} transfers $-unvalued")
+            note = f"  ({'; '.join(notes)})" if notes else ""
             return f"{sign}{_fmt(na['net'])}{note}"
         print(f"  net additions / withdrawals")
-        print(f"    YTD                     {_flow(na_ytd):>18}")
-        print(f"    TTM                     {_flow(na_ttm):>18}")
+        print(f"    YTD                     {_flow(na_ytd)}")
+        print(f"    TTM                     {_flow(na_ttm)}")
     print(f"  {line}")
     print(f"  for context — excluded from equity exposure:")
     print(f"    bonds                   {_fmt(s['bonds']):>18}")
