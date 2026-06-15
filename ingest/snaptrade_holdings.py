@@ -57,16 +57,18 @@ def register_and_connect() -> None:
     """one-time: register a SnapTrade user and print the Fidelity connection portal URL."""
     client = _client()
     user_id = os.getenv("SNAPTRADE_USER_ID") or "portfolio-owner"
-    reg = client.authentication.register_snap_trade_user(body={"userId": user_id})
+    reg = client.authentication.register_snap_trade_user(user_id=user_id)
     user_secret = reg.body["userSecret"]
     login = client.authentication.login_snap_trade_user(
-        query_params={"userId": user_id, "userSecret": user_secret}
+        user_id=user_id, user_secret=user_secret
     )
+    body = login.body
+    portal_url = body.get("redirectURI") if hasattr(body, "get") else body
     print("save these two lines into your .env, then re-run without --connect:\n")
     print(f"SNAPTRADE_USER_ID={user_id}")
     print(f"SNAPTRADE_USER_SECRET={user_secret}\n")
     print("open this URL to authorize Fidelity (read-only):\n")
-    print(login.body["redirectURI"])
+    print(portal_url)
 
 
 def _account_type(raw: str | None) -> str:
@@ -80,8 +82,53 @@ def _account_type(raw: str | None) -> str:
     return "taxable"
 
 
+def _extract_symbol(container) -> tuple[str | None, str | None]:
+    """walk SnapTrade's nested symbol objects to find (ticker_string, description).
+
+    shapes vary by SDK/endpoint: position['symbol']['symbol']['symbol'] (universal
+    symbol) or position['instrument']['symbol']. descend until we hit a string."""
+    node, desc = container, None
+    for _ in range(4):
+        if not hasattr(node, "get"):
+            break
+        if not desc:
+            desc = node.get("description")
+        s = node.get("symbol")
+        if isinstance(s, str):
+            return s, desc
+        node = s
+    return None, desc
+
+
+def _parse_position(p) -> tuple:
+    """pull (ticker, description, units, price, market_value, cost_basis) from a
+    SnapTrade position, tolerant of field-name differences across versions."""
+    container = p.get("symbol") or p.get("instrument") or {}
+    ticker, desc = _extract_symbol(container)
+    ticker = (ticker or "CASH").upper()
+    units = p.get("units") or p.get("quantity")
+    price = p.get("price") or p.get("market_price")
+    market_value = p.get("market_value")
+    if market_value is None and units and price:
+        market_value = units * price
+    avg = p.get("average_purchase_price")
+    cost_basis = avg * units if avg and units else None
+    return ticker, desc, units, price, market_value, cost_basis
+
+
+def _account_positions(client, creds: dict, account_id: str):
+    """fetch positions for an account, returning a plain list across SDK shapes."""
+    resp = client.account_information.get_user_account_positions(
+        account_id=account_id, **creds
+    )
+    body = resp.body
+    if hasattr(body, "get") and "results" in body:
+        return body["results"]
+    return list(body)
+
+
 def sync(snapshot_date: str) -> int:
-    """pull every linked account's positions and write today's snapshot."""
+    """pull every linked account's positions and write a dated snapshot."""
     client = _client()
     user_id = os.getenv("SNAPTRADE_USER_ID")
     user_secret = os.getenv("SNAPTRADE_USER_SECRET")
@@ -89,14 +136,14 @@ def sync(snapshot_date: str) -> int:
         raise SystemExit("run once with --connect to create + link your SnapTrade user.")
 
     creds = {"user_id": user_id, "user_secret": user_secret}
-    accounts = client.account_information.list_user_accounts(query_params=creds).body
+    accounts = client.account_information.list_user_accounts(**creds).body
 
     conn = get_connection()
     written = 0
     try:
         for acct in accounts:
             account_id = acct["id"]
-            name = acct.get("name") or acct.get("number")
+            name = acct.get("name") or acct.get("number") or account_id
             is_sma = 1 if _account_type(name) == "sma" else 0
             conn.execute(
                 """INSERT INTO accounts (account_id, name, type, is_sma)
@@ -106,15 +153,8 @@ def sync(snapshot_date: str) -> int:
                 (account_id, name, _account_type(name), is_sma),
             )
 
-            positions = client.account_information.get_user_account_positions(
-                query_params={**creds, "account_id": account_id}
-            ).body
-            for p in positions:
-                sym = (p.get("symbol", {}) or {}).get("symbol", {}) or {}
-                ticker = (sym.get("symbol") or "CASH").upper()
-                units = p.get("units")
-                price = p.get("price")
-                mkt = (units or 0) * (price or 0) if units and price else p.get("market_value")
+            for p in _account_positions(client, creds, account_id):
+                ticker, desc, units, price, mkt, cost = _parse_position(p)
                 conn.execute(
                     """INSERT INTO holdings_snapshots
                            (snapshot_date, account_id, ticker, description,
@@ -123,13 +163,7 @@ def sync(snapshot_date: str) -> int:
                        ON CONFLICT(snapshot_date, account_id, ticker) DO UPDATE SET
                            shares=excluded.shares, cost_basis=excluded.cost_basis,
                            market_value=excluded.market_value, price=excluded.price""",
-                    (
-                        snapshot_date, account_id, ticker,
-                        sym.get("description"), units,
-                        p.get("average_purchase_price") and units and
-                        p["average_purchase_price"] * units,
-                        mkt, price,
-                    ),
+                    (snapshot_date, account_id, ticker, desc, units, cost, mkt, price),
                 )
                 written += 1
         conn.commit()
