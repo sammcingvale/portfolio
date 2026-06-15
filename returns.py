@@ -105,8 +105,10 @@ def _equity_value(snapshot_date: str) -> float:
     """total market value of the EQUITY-classified positions in a snapshot."""
     conn = get_connection()
     try:
+        # v_holdings collapses each date to a single authoritative source, so a day
+        # with both the CSV bootstrap and the SnapTrade pull isn't counted twice.
         rows = conn.execute(
-            """SELECT ticker, description, market_value FROM holdings_snapshots
+            """SELECT ticker, description, market_value FROM v_holdings
                WHERE snapshot_date = ? AND market_value IS NOT NULL""",
             (snapshot_date,),
         ).fetchall()

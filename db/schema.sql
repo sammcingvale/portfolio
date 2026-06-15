@@ -85,11 +85,28 @@ CREATE INDEX IF NOT EXISTS idx_tx_flow ON transactions (is_external_flow);
 CREATE VIEW IF NOT EXISTS v_latest_date AS
     SELECT MAX(snapshot_date) AS snapshot_date FROM holdings_snapshots;
 
--- every position as of the latest snapshot
-CREATE VIEW IF NOT EXISTS v_latest_holdings AS
+-- authoritative holdings: exactly ONE source per snapshot date. a single day can
+-- carry the same portfolio from more than one source (the one-time CSV bootstrap
+-- overlapping the automated SnapTrade pull) — summing both double-counts everything
+-- downstream. keep only the highest-priority source present that day:
+-- snaptrade (live daily feed) > fidelity_csv (bootstrap) > anything else.
+CREATE VIEW IF NOT EXISTS v_holdings AS
     SELECT h.*
     FROM holdings_snapshots h
-    JOIN v_latest_date d ON h.snapshot_date = d.snapshot_date;
+    JOIN (
+        SELECT snapshot_date,
+               MIN(CASE source WHEN 'snaptrade' THEN 0
+                               WHEN 'fidelity_csv' THEN 1 ELSE 2 END) AS pri
+        FROM holdings_snapshots
+        GROUP BY snapshot_date
+    ) p ON p.snapshot_date = h.snapshot_date
+       AND CASE h.source WHEN 'snaptrade' THEN 0
+                         WHEN 'fidelity_csv' THEN 1 ELSE 2 END = p.pri;
+
+-- every position as of the latest snapshot (single source, via v_holdings)
+CREATE VIEW IF NOT EXISTS v_latest_holdings AS
+    SELECT * FROM v_holdings
+    WHERE snapshot_date = (SELECT snapshot_date FROM v_latest_date);
 
 -- latest holdings rolled up across all accounts, by ticker, with % of portfolio
 CREATE VIEW IF NOT EXISTS v_position_by_ticker AS
