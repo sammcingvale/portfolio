@@ -55,10 +55,12 @@ def _client():
 
 PERSONAL_KEY_HELP = (
     "you have a PERSONAL SnapTrade key — its user is auto-provisioned at signup, so\n"
-    "registration is not available (and not needed). instead:\n"
-    "  1. open your SnapTrade dashboard and copy your userId and userSecret\n"
-    "  2. put them in .env as SNAPTRADE_USER_ID and SNAPTRADE_USER_SECRET\n"
-    "  3. you've already connected Fidelity, so skip --connect and run:\n"
+    "registration is not available AND there is no separate userSecret to look up\n"
+    "(the dashboard never shows one). the clientId + consumerKey signature plus your\n"
+    "auto-provisioned userId is all the API needs. so:\n"
+    "  1. set SNAPTRADE_USER_ID in .env to your auto-provisioned user id\n"
+    "     (leave SNAPTRADE_USER_SECRET blank — personal keys don't use it)\n"
+    "  2. you've already connected Fidelity, so skip --connect and run:\n"
     "       python ingest/snaptrade_holdings.py --list   # verify the connection\n"
     "       python ingest/snaptrade_holdings.py          # write today's snapshot"
 )
@@ -90,14 +92,15 @@ def register_and_connect() -> None:
 
 
 def _user_creds() -> dict:
-    """read the provisioned user credentials from .env, or explain how to get them."""
+    """read the provisioned user identity from .env, or explain how to get it.
+
+    personal keys have no userSecret — the request signature (clientId + consumerKey)
+    plus the auto-provisioned userId is sufficient, so an empty secret is expected and
+    correct. developer keys supply a real secret saved by --connect."""
     user_id = os.getenv("SNAPTRADE_USER_ID")
-    user_secret = os.getenv("SNAPTRADE_USER_SECRET")
-    if not user_id or not user_secret:
-        raise SystemExit(
-            "missing SNAPTRADE_USER_ID / SNAPTRADE_USER_SECRET in .env.\n\n" + PERSONAL_KEY_HELP
-        )
-    return {"user_id": user_id, "user_secret": user_secret}
+    if not user_id:
+        raise SystemExit("missing SNAPTRADE_USER_ID in .env.\n\n" + PERSONAL_KEY_HELP)
+    return {"user_id": user_id, "user_secret": os.getenv("SNAPTRADE_USER_SECRET") or ""}
 
 
 def list_accounts() -> None:
@@ -145,25 +148,41 @@ def _extract_symbol(container) -> tuple[str | None, str | None]:
     return None, desc
 
 
+def _num(v):
+    """coerce SnapTrade's stringified numerics to float (v11 returns units/price/
+    cost_basis as strings); tolerate None, empty, and already-numeric values."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_position(p) -> tuple:
     """pull (ticker, description, units, price, market_value, cost_basis) from a
-    SnapTrade position, tolerant of field-name differences across versions."""
+    SnapTrade position, tolerant of field-name and type differences across versions.
+
+    v11 shape: symbol + description live under `instrument`; units/price/cost_basis
+    arrive as strings; there is no market_value (compute it); and `cost_basis` is the
+    PER-UNIT average price, so total cost = cost_basis * units (matches the old
+    average_purchase_price semantics)."""
     container = p.get("symbol") or p.get("instrument") or {}
     ticker, desc = _extract_symbol(container)
     ticker = (ticker or "CASH").upper()
-    units = p.get("units") or p.get("quantity")
-    price = p.get("price") or p.get("market_price")
-    market_value = p.get("market_value")
-    if market_value is None and units and price:
+    units = _num(p.get("units") or p.get("quantity"))
+    price = _num(p.get("price") or p.get("market_price"))
+    market_value = _num(p.get("market_value"))
+    if market_value is None and units is not None and price is not None:
         market_value = units * price
-    avg = p.get("average_purchase_price")
-    cost_basis = avg * units if avg and units else None
+    per_unit_cost = _num(p.get("cost_basis") or p.get("average_purchase_price"))
+    cost_basis = per_unit_cost * units if per_unit_cost is not None and units is not None else None
     return ticker, desc, units, price, market_value, cost_basis
 
 
 def _account_positions(client, creds: dict, account_id: str):
     """fetch positions for an account, returning a plain list across SDK shapes."""
-    resp = client.account_information.get_user_account_positions(
+    resp = client.account_information.get_all_account_positions(
         account_id=account_id, **creds
     )
     body = resp.body
