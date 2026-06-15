@@ -50,3 +50,6 @@ env/
 .vscode/
 .idea/
 .claude/
+
+# scheduled-job logs (may reveal holdings via script output)
+logs/

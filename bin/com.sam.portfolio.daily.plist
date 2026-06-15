@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  reference copy of the daily-refresh LaunchAgent. the live copy lives at
+  ~/Library/LaunchAgents/com.sam.portfolio.daily.plist. to (re)install:
+
+    cp bin/com.sam.portfolio.daily.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sam.portfolio.daily.plist
+
+  to remove:  launchctl bootout gui/$(id -u)/com.sam.portfolio.daily
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sam.portfolio.daily</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/sam/Gits/portfolio/bin/daily_refresh.sh</string>
+    </array>
+
+    <!-- weekdays at 16:00 local (Mountain) = 18:00 ET, after the close settles.
+         if the Mac is asleep/off at 16:00, launchd coalesces any missed runs into
+         a single run shortly after the next wake. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+    </array>
+
+    <!-- don't fire on load; we test-run the wrapper by hand instead -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/sam/Gits/portfolio/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sam/Gits/portfolio/logs/launchd.err.log</string>
+</dict>
+</plist>

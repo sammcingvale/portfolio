@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
+import time
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -32,6 +35,51 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+# the SnapTrade SDK exposes no request timeout and ignores socket defaults, so a
+# stalled connection hangs forever — fatal for an unattended daily job (it would
+# wedge the schedule). bound every call with a SIGALRM deadline + a few retries.
+# most accounts return in <1s, but a large/slow one has been observed taking ~40s,
+# so the per-call deadline is generous; the wrapper's wall-clock cap is the real
+# backstop against an infinite hang.
+API_TIMEOUT = 60  # seconds before a single request is treated as hung
+API_TRIES = 3     # attempts per call before we give up on the whole run
+
+
+class _Timeout(BaseException):
+    """raised by the SIGALRM handler. subclasses BaseException so the SDK's own
+    `except Exception:` blocks can't swallow the interrupt before we see it."""
+
+
+@contextmanager
+def _deadline(seconds: float):
+    def _raise(*_):
+        raise _Timeout(f"no response after {seconds:g}s")
+    old = signal.signal(signal.SIGALRM, _raise)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old)
+
+
+def _call(fn, what: str):
+    """run a SnapTrade SDK call with a per-attempt deadline and bounded retries.
+    on repeated failure raise — a missing snapshot is a recoverable gap, but a
+    silently partial one would understate the portfolio."""
+    for attempt in range(1, API_TRIES + 1):
+        try:
+            with _deadline(API_TIMEOUT):
+                return fn()
+        except (_Timeout, Exception) as e:  # noqa: BLE001 — network/timeout/API
+            if attempt == API_TRIES:
+                raise SystemExit(
+                    f"SnapTrade call failed ({what}) after {API_TRIES} attempts: {e}\n"
+                    "no snapshot written — the next scheduled run will retry."
+                )
+            print(f"  {what}: attempt {attempt}/{API_TRIES} failed ({e}); retrying...")
+            time.sleep(2 * attempt)
 
 
 def _client():
@@ -107,7 +155,8 @@ def list_accounts() -> None:
     """verify the connection: list linked accounts and their position counts (no DB write)."""
     client = _client()
     creds = _user_creds()
-    accounts = client.account_information.list_user_accounts(**creds).body
+    accounts = _call(lambda: client.account_information.list_user_accounts(**creds).body,
+                     "list accounts")
     if not accounts:
         raise SystemExit("connected, but SnapTrade returned 0 accounts — is Fidelity linked "
                          "and finished its initial sync in the SnapTrade portal?")
@@ -182,8 +231,10 @@ def _parse_position(p) -> tuple:
 
 def _account_positions(client, creds: dict, account_id: str):
     """fetch positions for an account, returning a plain list across SDK shapes."""
-    resp = client.account_information.get_all_account_positions(
-        account_id=account_id, **creds
+    resp = _call(
+        lambda: client.account_information.get_all_account_positions(
+            account_id=account_id, **creds),
+        f"positions for {account_id}",
     )
     body = resp.body
     if hasattr(body, "get") and "results" in body:
@@ -195,7 +246,8 @@ def sync(snapshot_date: str) -> int:
     """pull every linked account's positions and write a dated snapshot."""
     client = _client()
     creds = _user_creds()
-    accounts = client.account_information.list_user_accounts(**creds).body
+    accounts = _call(lambda: client.account_information.list_user_accounts(**creds).body,
+                     "list accounts")
 
     conn = get_connection()
     written = 0
