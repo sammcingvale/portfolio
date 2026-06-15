@@ -53,11 +53,29 @@ def _client():
     return SnapTrade(client_id=client_id, consumer_key=consumer_key)
 
 
+PERSONAL_KEY_HELP = (
+    "you have a PERSONAL SnapTrade key — its user is auto-provisioned at signup, so\n"
+    "registration is not available (and not needed). instead:\n"
+    "  1. open your SnapTrade dashboard and copy your userId and userSecret\n"
+    "  2. put them in .env as SNAPTRADE_USER_ID and SNAPTRADE_USER_SECRET\n"
+    "  3. you've already connected Fidelity, so skip --connect and run:\n"
+    "       python ingest/snaptrade_holdings.py --list   # verify the connection\n"
+    "       python ingest/snaptrade_holdings.py          # write today's snapshot"
+)
+
+
 def register_and_connect() -> None:
-    """one-time: register a SnapTrade user and print the Fidelity connection portal URL."""
+    """one-time: register a SnapTrade user and print the Fidelity connection portal URL.
+    (developer keys only — personal keys are auto-provisioned, see PERSONAL_KEY_HELP)."""
     client = _client()
     user_id = os.getenv("SNAPTRADE_USER_ID") or "portfolio-owner"
-    reg = client.authentication.register_snap_trade_user(user_id=user_id)
+    try:
+        reg = client.authentication.register_snap_trade_user(user_id=user_id)
+    except Exception as e:  # noqa: BLE001 — surface the personal-key case clearly
+        msg = str(e)
+        if "1012" in msg or "personal" in msg.lower():
+            raise SystemExit(PERSONAL_KEY_HELP)
+        raise
     user_secret = reg.body["userSecret"]
     login = client.authentication.login_snap_trade_user(
         user_id=user_id, user_secret=user_secret
@@ -69,6 +87,33 @@ def register_and_connect() -> None:
     print(f"SNAPTRADE_USER_SECRET={user_secret}\n")
     print("open this URL to authorize Fidelity (read-only):\n")
     print(portal_url)
+
+
+def _user_creds() -> dict:
+    """read the provisioned user credentials from .env, or explain how to get them."""
+    user_id = os.getenv("SNAPTRADE_USER_ID")
+    user_secret = os.getenv("SNAPTRADE_USER_SECRET")
+    if not user_id or not user_secret:
+        raise SystemExit(
+            "missing SNAPTRADE_USER_ID / SNAPTRADE_USER_SECRET in .env.\n\n" + PERSONAL_KEY_HELP
+        )
+    return {"user_id": user_id, "user_secret": user_secret}
+
+
+def list_accounts() -> None:
+    """verify the connection: list linked accounts and their position counts (no DB write)."""
+    client = _client()
+    creds = _user_creds()
+    accounts = client.account_information.list_user_accounts(**creds).body
+    if not accounts:
+        raise SystemExit("connected, but SnapTrade returned 0 accounts — is Fidelity linked "
+                         "and finished its initial sync in the SnapTrade portal?")
+    print(f"connected — {len(accounts)} account(s):\n")
+    for acct in accounts:
+        n = len(_account_positions(client, creds, acct["id"]))
+        name = acct.get("name") or acct.get("number") or acct["id"]
+        print(f"  {name:36}  type={acct.get('account_type') or acct.get('type','?'):10}  {n} positions")
+    print("\nlooks good — run without --list to write today's snapshot.")
 
 
 def _account_type(raw: str | None) -> str:
@@ -130,12 +175,7 @@ def _account_positions(client, creds: dict, account_id: str):
 def sync(snapshot_date: str) -> int:
     """pull every linked account's positions and write a dated snapshot."""
     client = _client()
-    user_id = os.getenv("SNAPTRADE_USER_ID")
-    user_secret = os.getenv("SNAPTRADE_USER_SECRET")
-    if not user_id or not user_secret:
-        raise SystemExit("run once with --connect to create + link your SnapTrade user.")
-
-    creds = {"user_id": user_id, "user_secret": user_secret}
+    creds = _user_creds()
     accounts = client.account_information.list_user_accounts(**creds).body
 
     conn = get_connection()
@@ -175,7 +215,9 @@ def sync(snapshot_date: str) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="sync Fidelity holdings via SnapTrade")
     parser.add_argument("--connect", action="store_true",
-                        help="one-time: register user + print Fidelity connection URL")
+                        help="(developer keys) register user + print Fidelity connection URL")
+    parser.add_argument("--list", action="store_true",
+                        help="verify the connection: list accounts + position counts, no write")
     parser.add_argument("--date", default=date.today().isoformat(),
                         help="snapshot date (default: today)")
     args = parser.parse_args()
@@ -183,6 +225,9 @@ def main() -> None:
     init_db()
     if args.connect:
         register_and_connect()
+        return
+    if args.list:
+        list_accounts()
         return
     n = sync(args.date)
     print(f"synced {n} positions for snapshot {args.date}")
