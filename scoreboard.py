@@ -22,27 +22,11 @@ the trades you made mid-period. it converges to the real thing as daily snapshot
 
 from __future__ import annotations
 
-import re
-
 import pandas as pd
 
+from classify import classify
 from portfolio_db import get_connection
 from returns import money_weighted_return
-
-# cash / money-market symbols
-CASH_SYMBOLS = {"CASH", "SPAXX", "FDRXX", "FZFXX", "FCASH", "FNSXX", "FGXX"}
-# an exchange-listed equity/ETF symbol; anything else non-cash is a bond CUSIP / SMA line
-EXCHANGE_TICKER = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
-
-
-def classify(ticker: str, description: str | None) -> str:
-    """bucket a holding into 'cash' | 'bond' | 'equity'. first-pass heuristic."""
-    desc = (description or "").upper()
-    if ticker in CASH_SYMBOLS or "MONEY MARKET" in desc:
-        return "cash"
-    if not EXCHANGE_TICKER.match(ticker):
-        return "bond"          # CUSIP-identified individual bonds (common in SMAs)
-    return "equity"
 
 
 def _latest_holdings() -> pd.DataFrame:
@@ -203,10 +187,10 @@ def main() -> None:
     print(f"  {line}")
     mwr = s["money_weighted"]
     if "error" in mwr:
-        print(f"  money-weighted return            PENDING (needs a 2nd holdings snapshot)")
+        print(f"  equity money-weighted return     PENDING (needs a 2nd holdings snapshot)")
     else:
         sign = "+" if (mwr["money_weighted_return_annualized"] or 0) >= 0 else ""
-        print(f"  money-weighted return   {mwr['start_date']} → {mwr['end_date']}")
+        print(f"  equity money-weighted return  {mwr['start_date']} → {mwr['end_date']}")
         print(f"    annualized (XIRR)       {sign}{mwr['money_weighted_return_annualized']}%")
         print(f"    investment gain         {sign if mwr['investment_gain']>=0 else ''}"
               f"{_fmt(mwr['investment_gain'])}   (markets, net of your deposits/withdrawals)")

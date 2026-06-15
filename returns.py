@@ -1,17 +1,18 @@
 """
-money-weighted (dollar-weighted / XIRR) return for the portfolio.
+equity money-weighted (dollar-weighted / XIRR) return.
 
-a money-weighted return accounts for the SIZE and TIMING of the cash you moved in
-and out — it answers "what annualized rate did my actual dollars earn?" computing
-it rigorously needs three things:
+scoped to the EQUITY sleeve: it answers "what annualized rate did my equity dollars
+earn?", accounting for the size and timing of money moving into and out of equities
+(buys, sells, dividends, equity transfers). bonds/cash only matter when they cross
+that boundary. computing it rigorously needs three things:
 
-    1. a BEGINNING portfolio value   (a holdings snapshot at the start date)
-    2. the EXTERNAL cash flows between (deposits/withdrawals/transfers — we have these)
-    3. an ENDING portfolio value      (the latest holdings snapshot)
+    1. a BEGINNING equity value      (a holdings snapshot at the start date)
+    2. the equity FLOWS between        (buys/sells/dividends — we have these)
+    3. an ENDING equity value          (the latest holdings snapshot)
 
-we always have (2) and (3). (1) requires a SECOND holdings snapshot — so drop an
-older Fidelity positions export (csv_bootstrap.py imports it under its own date)
-and this lights up. with daily snapshots going forward it becomes automatic.
+we always have (2) and (3). (1) requires a SECOND holdings snapshot — these
+accumulate automatically once SnapTrade syncs daily (or import an older positions
+export now). with one snapshot, this reports PENDING.
 
 run:
     python returns.py                      # uses earliest -> latest snapshot
@@ -26,11 +27,16 @@ from __future__ import annotations
 
 import argparse
 
+from classify import classify
 from portfolio_db import get_connection
 
-# external-flow categories: money/shares that crossed the portfolio boundary.
-# `amount` sign in transactions is + for money IN, - for money OUT.
-EXTERNAL_CATEGORIES = ("deposit", "withdrawal", "transfer_in", "transfer_out")
+# the equity sleeve is treated as its own account. flows across ITS boundary:
+#   INTO equity  (contributions): buying equities, reinvesting, equities transferred in
+#   OUT of equity (withdrawals):  selling equities, dividends paid out, equities transferred out
+# bonds/cash only matter when they cross this line (e.g. a bond sale that buys equity
+# shows up as the equity buy). dividends are counted out -> this is a TOTAL return.
+EQUITY_FLOW_IN = ("buy", "reinvestment", "transfer_in")
+EQUITY_FLOW_OUT = ("sell", "dividend", "transfer_out")
 
 
 def xirr(cashflows: list[tuple[str, float]], guess: float = 0.1) -> float | None:
@@ -95,60 +101,75 @@ def _snapshot_dates() -> list[str]:
         conn.close()
 
 
-def _portfolio_value(snapshot_date: str) -> float:
-    conn = get_connection()
-    try:
-        return conn.execute(
-            "SELECT COALESCE(SUM(market_value), 0) FROM holdings_snapshots WHERE snapshot_date = ?",
-            (snapshot_date,),
-        ).fetchone()[0]
-    finally:
-        conn.close()
-
-
-def _external_flows(start: str, end: str) -> list[tuple[str, float]]:
-    """external cash flows in (start, end], as [(date, amount)] with +in / -out."""
+def _equity_value(snapshot_date: str) -> float:
+    """total market value of the EQUITY-classified positions in a snapshot."""
     conn = get_connection()
     try:
         rows = conn.execute(
-            f"""SELECT run_date, amount FROM transactions
-                WHERE category IN ({','.join('?' * len(EXTERNAL_CATEGORIES))})
-                  AND amount IS NOT NULL
-                  AND run_date > ? AND run_date <= ?
-                ORDER BY run_date""",
-            (*EXTERNAL_CATEGORIES, start, end),
+            """SELECT ticker, description, market_value FROM holdings_snapshots
+               WHERE snapshot_date = ? AND market_value IS NOT NULL""",
+            (snapshot_date,),
         ).fetchall()
     finally:
         conn.close()
-    return [(r["run_date"], r["amount"]) for r in rows]
+    return sum(r["market_value"] for r in rows
+               if classify(r["ticker"], r["description"]) == "equity")
+
+
+def _equity_flows(start: str, end: str) -> list[tuple[str, float]]:
+    """equity-sleeve cashflows in (start, end], from the investor's perspective:
+    contributions (buying equity) negative, withdrawals (selling/dividends) positive."""
+    conn = get_connection()
+    try:
+        cats = EQUITY_FLOW_IN + EQUITY_FLOW_OUT
+        rows = conn.execute(
+            f"""SELECT run_date, category, symbol, description, amount FROM transactions
+                WHERE category IN ({','.join('?' * len(cats))})
+                  AND amount IS NOT NULL
+                  AND run_date > ? AND run_date <= ?
+                ORDER BY run_date""",
+            (*cats, start, end),
+        ).fetchall()
+    finally:
+        conn.close()
+    flows = []
+    for r in rows:
+        if classify(r["symbol"], r["description"]) != "equity":
+            continue  # bond/cash trades don't touch the equity sleeve
+        mag = abs(r["amount"])
+        cf = -mag if r["category"] in EQUITY_FLOW_IN else mag
+        flows.append((r["run_date"], cf))
+    return flows
 
 
 def money_weighted_return(start: str | None = None, end: str | None = None) -> dict:
+    """equity-sleeve money-weighted (XIRR) return between two holdings snapshots."""
     snaps = _snapshot_dates()
     if len(snaps) < 2:
         return {
             "error": "need at least 2 holdings snapshots to compute a return. "
-                     "drop an older Fidelity positions export and import it:\n"
-                     "  python ingest/csv_bootstrap.py data/<older_positions>.csv",
+                     "snapshots accumulate automatically once SnapTrade runs daily, "
+                     "or import an older Fidelity positions export now.",
             "snapshots_available": snaps,
         }
     start = start or snaps[0]
     end = end or snaps[-1]
-    bv, ev = _portfolio_value(start), _portfolio_value(end)
-    flows = _external_flows(start, end)
-    net_flows = sum(a for _, a in flows)
-    investment_gain = ev - bv - net_flows  # what the markets (not your deposits) produced
+    bv, ev = _equity_value(start), _equity_value(end)
+    flows = _equity_flows(start, end)
+    # net contribution INTO equity = -(sum of signed investor cashflows)
+    net_into_equity = -sum(cf for _, cf in flows)
+    investment_gain = ev - bv - net_into_equity  # market appreciation + dividends
 
-    # build the XIRR cashflow stream from the investor's perspective
-    cashflows = [(start, -bv)] + [(d, -a) for d, a in flows] + [(end, ev)]
+    cashflows = [(start, -bv)] + flows + [(end, ev)]
     rate = xirr(cashflows)
 
     return {
+        "scope": "equity",
         "start_date": start,
         "end_date": end,
         "beginning_value": round(bv),
         "ending_value": round(ev),
-        "net_external_flows": round(net_flows),
+        "net_invested_into_equity": round(net_into_equity),
         "investment_gain": round(investment_gain),
         "money_weighted_return_annualized": round(rate * 100, 2) if rate is not None else None,
         "num_flows": len(flows),
@@ -166,13 +187,13 @@ def main() -> None:
         print(r["error"])
         print(f"\nsnapshots currently available: {r['snapshots_available']}")
         return
-    print(f"\n  MONEY-WEIGHTED RETURN   {r['start_date']} → {r['end_date']}")
-    print(f"  {'─' * 50}")
-    print(f"  beginning value        ${r['beginning_value']:>14,}")
-    print(f"  net additions/withdrawals ${r['net_external_flows']:>11,}")
-    print(f"  ending value           ${r['ending_value']:>14,}")
-    print(f"  investment gain        ${r['investment_gain']:>14,}   (markets, not deposits)")
-    print(f"  money-weighted return   {r['money_weighted_return_annualized']}%   annualized")
+    print(f"\n  EQUITY MONEY-WEIGHTED RETURN   {r['start_date']} → {r['end_date']}")
+    print(f"  {'─' * 52}")
+    print(f"  beginning equity value   ${r['beginning_value']:>14,}")
+    print(f"  net invested into equity ${r['net_invested_into_equity']:>14,}   (buys - sells/divs)")
+    print(f"  ending equity value      ${r['ending_value']:>14,}")
+    print(f"  investment gain          ${r['investment_gain']:>14,}   (appreciation + dividends)")
+    print(f"  money-weighted return     {r['money_weighted_return_annualized']}%   annualized")
     print()
 
 
